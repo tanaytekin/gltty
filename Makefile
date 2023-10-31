@@ -1,8 +1,8 @@
 INCS = -Iglad/include
-CFLAGS = -std=gnu99 -Wall -pedantic `pkg-config --cflags glfw3` $(INCS)
-LDFLAGS = -lm `pkg-config --libs glfw3`
+CFLAGS = -std=gnu99 -Wall -pedantic `pkg-config --cflags glfw3 freetype2` $(INCS)
+LDFLAGS = -lm `pkg-config --libs glfw3 freetype2`
 
-SRC = main.c
+SRC = main.c ft.c gl.c
 OBJ = $(SRC:.c=.o)
 
 all : gltty
@@ -13,7 +13,7 @@ gltty : glad.o $(OBJ)
 glad.o : glad/src/glad.c
 	$(CC) -c $< $(INCS)
 
-%.o : %.c
+%.o : %.c gltty.h
 	$(CC) -c $< $(CFLAGS)
 
 clean :

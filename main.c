@@ -1,10 +1,17 @@
+#define _DEFAULT_SOURCE
+#define _XOPEN_SOURCE 600
+#include <sys/select.h>
+#include <sys/ioctl.h>
+#include <termios.h>
+#include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <string.h>
 #include <stdbool.h>
-#include <ctype.h>
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -386,6 +393,7 @@ static void write_to_terminal(Terminal *t, Cells *c, void *buf, size_t size)
 {
     char *b = buf;
     for(size_t i = 0; i < size; i++) {
+        log_info("write: %c", b[i]);
         if (is_printable_ascii(b[i])) {
             recalculate_cursor(t);
             push_cell(c, b[i], t->cursor_x, t->cursor_y);
@@ -397,8 +405,55 @@ static void write_to_terminal(Terminal *t, Cells *c, void *buf, size_t size)
     }
 }
 
+static void setup_tty(int *master)
+{
+    int slave;
+    int rc;
+    
+    *master = posix_openpt(O_RDWR);
+    if (*master < 0) {
+        fatal("posix_openpt() error: %s\n", strerror(errno));
+    }
+    rc = grantpt(*master);
+    if (rc != 0) {
+        fatal("grantpt() error: %s\n", strerror(errno));
+    }
+    rc = unlockpt(*master);
+    if (rc != 0) {
+        fatal("unlockpt() error: %s\n", strerror(errno));
+    }
+
+    slave = open(ptsname(*master), O_RDWR);
+
+    if (fork()) {
+        close(slave);
+    } else {
+        close(*master);
+        
+        struct termios old;
+        struct termios new;
+        rc =tcgetattr(slave, &old);
+        new = old;
+        cfmakeraw(&new);
+        tcsetattr(slave, TCSANOW, &new);
+        dup2(slave, 0);
+        dup2(slave, 1);
+        dup2(slave, 2);
+        close(slave);
+
+        setsid();
+        ioctl(0, TIOCSCTTY, 1);
+        {
+            char *argv[] = {"/usr/bin/sh", NULL};
+            execvp(argv[0], argv);
+        }
+    }
+}
+
 int main(void)
 {
+    int master;
+    setup_tty(&master);
     const char *font_path = "/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf";
     const int font_size = 16;
     
@@ -435,7 +490,26 @@ int main(void)
 
     Terminal terminal;
     init_terminal(&terminal);
-    write_to_terminal(&terminal,  &cells, buf, strlen(buf));
+    char input[1024];
+    {
+        int rc;
+        fd_set fd_in;
+        FD_ZERO(&fd_in);
+        FD_SET(master, &fd_in);
+        rc = select(master + 1, &fd_in, NULL, NULL, NULL);
+        switch (rc) {
+            case -1: 
+                fatal("select() error: %s", strerror(errno));
+                break;
+            default:
+                {
+                    if (FD_ISSET(master, &fd_in)) {
+                        rc = read(master, input, sizeof(input));
+                        write_to_terminal(&terminal,  &cells, input, rc);
+                    }
+                }
+        }
+    }
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);

@@ -3,6 +3,8 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <string.h>
+#include <stdbool.h>
+#include <ctype.h>
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -57,12 +59,24 @@ typedef struct {
 } RenderContext;
 
 typedef struct {
-    char c[TTY_COUNT];
-    int x[TTY_COUNT];
-    int y[TTY_COUNT];
+    char c;
+    int x;
+    int y;
+} Cell;
+
+typedef struct {
+    Cell *cells;
+    size_t capacity;
     size_t count;
 } Cells;
 
+typedef struct {
+    size_t cursor;
+    size_t cursor_x;
+    size_t cursor_y;
+    int columns;
+    int rows;
+} Terminal;
 
 static const char *vertex_src = {
 "#version 330 core\n"
@@ -300,9 +314,10 @@ static void render_init(RenderContext *rc, Font *font, int screen_width, int scr
 static void render(RenderContext *rc, Font *font, Cells *cells)
 {
     for (size_t k = 0; k < cells->count; k++) {
-            const Character *c = &font->chars[cells->c[k] - ASCII_BEGIN];
-            const int i = cells->x[k];
-            const int j = cells->y[k];
+            const Cell *cell = &cells->cells[k];
+            const Character *c = &font->chars[cell->c - ASCII_BEGIN];
+            const int i = cell->x;
+            const int j = cell->y;
             float xc = i * font->char_width + c->bearing.x;
             float yc = j * font->char_height +
                        font->char_height/4.0f - c->height + c->bearing.y;
@@ -331,15 +346,55 @@ static void render(RenderContext *rc, Font *font, Cells *cells)
     glDrawArrays(GL_TRIANGLES, 0, 6 * cells->count);
 }
 
+static void init_cells(Cells *cells)
+{
+    memset(cells, 0, sizeof(Cells));
+    cells->capacity = TTY_COUNT;
+    cells->cells = malloc(sizeof(Cell) * cells->capacity);
+    if (cells->cells == NULL)
+        fatal("Malloc failed.");
+}
+
 static void push_cell(Cells *cells, char c, int x, int y)
 {
-    if (cells->count >= TTY_COUNT)
+    if (cells->count >= cells->capacity)
         fatal("Cells capacity overflow");
-    const size_t i = cells->count;
-    cells->c[i] = c;
-    cells->x[i] = x;
-    cells->y[i] = y;
+    Cell *cell = &cells->cells[cells->count];
+    cell->c = c;
+    cell->x = x;
+    cell->y = TTY_ROWS - 1 - y;
     cells->count++;
+}
+
+static void init_terminal(Terminal *t)
+{
+    memset(t, 0, sizeof(Terminal));
+    t->columns = TTY_COLUMNS;
+    t->rows = TTY_ROWS;
+}
+
+static inline bool is_printable_ascii(char c)
+{
+    return (c >= ASCII_BEGIN) && (c <= ASCII_END);
+}
+static void recalculate_cursor(Terminal *t)
+{
+    t->cursor_y += t->cursor_x / t->columns;
+    t->cursor_x = t->cursor_x % t->columns;
+}
+static void write_to_terminal(Terminal *t, Cells *c, void *buf, size_t size)
+{
+    char *b = buf;
+    for(size_t i = 0; i < size; i++) {
+        if (is_printable_ascii(b[i])) {
+            recalculate_cursor(t);
+            push_cell(c, b[i], t->cursor_x, t->cursor_y);
+            t->cursor_x++;
+        } else if (b[i] == '\n') {
+            t->cursor_x = 0;
+            t->cursor_y++;
+        }
+    }
 }
 
 int main(void)
@@ -373,10 +428,14 @@ int main(void)
     render_init(&rc, &font, screen_width, screen_height);
 
     Cells cells = {0};
-    push_cell(&cells, 't', 0, 0);
-    push_cell(&cells, 'e', 1, 0);
-    push_cell(&cells, 's', 2, 0);
-    push_cell(&cells, 't', 3, 0);
+    init_cells(&cells);
+
+    char *buf = malloc(1024);
+    strcpy(buf, vertex_src);
+
+    Terminal terminal;
+    init_terminal(&terminal);
+    write_to_terminal(&terminal,  &cells, buf, strlen(buf));
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
